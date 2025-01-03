@@ -147,20 +147,24 @@ get_tests_group <-
     if (base::isTRUE(sync)) {
       # Sync From
       if (!base::is.null(from)) {
-        query$syncFrom <- from
+        f <- validate_timestamp(from)
+        query$syncFrom <- f
       }
       # Sync To
       if (!base::is.null(to)) {
-        query$syncTo <- to
+        t <- validate_timestamp(to)
+        query$syncTo <- t
       }
     } else if (isFALSE(sync)) {
       # From
       if (!base::is.null(from)) {
-        query$from <- from
+        f <- validate_timestamp(from)
+        query$from <- f
       }
       # To
       if (!base::is.null(to)) {
-        query$to <- to
+        t <- validate_timestamp(to)
+        query$to <- t
       }
     }
 
@@ -213,7 +217,7 @@ get_tests_group <-
                                  check_type = TRUE,
                                  simplifyVector = TRUE)
 
-    # 5. ----- Sort Test Data -----
+      # 5. ----- Sort Test Data -----
       ## Test returned count -----
       count <- x$count
 
@@ -229,7 +233,7 @@ get_tests_group <-
         trialMetrics <- df[6:ncol(df)]
 
         # Clean Trial Metric Names
-        trialMetrics <- janitor::clean_names(trialMetrics)
+        trialMetrics <- replace_headers(df = trialMetrics, typeId = "all")
 
         ### Test Type Data -----
         # Index Test Type Data
@@ -310,4 +314,3 @@ get_tests_group <-
       }
     }
   }
-

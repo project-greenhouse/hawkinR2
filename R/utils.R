@@ -1,3 +1,114 @@
+#--------------------#
+
+
+#' Check Authentication Validity
+#'
+#' Takes the current token expiration and validates it
+#' @keywords internal
+check_token_validity <- function() {
+  token_expiration <- as.numeric(Sys.getenv("accessToken_expiration"))
+  if (Sys.time() > as.POSIXct(token_expiration, origin = "1970-01-01")) {
+    Sys.setenv(accessToken_valid = FALSE)
+  } else {
+    Sys.setenv(accessToken_valid = TRUE)
+  }
+  invisible(NULL)  # To avoid printing
+}
+
+
+#--------------------#
+
+
+#' Monitor Authentication Validity
+#'
+#' Looped checks of access taken validation
+#'
+#' @keywords internal
+monitor_token <- function() {
+  tryCatch(
+    {
+      check_token_validity()  # Perform the validity check
+      later::later(monitor_token, 5)  # Schedule the next check
+    },
+    error = function(e) {
+      message("An error occurred in monitor_token: ", e$message)
+      # Optionally retry scheduling in case of recoverable errors
+      later::later(monitor_token, 5)
+    }
+  )
+}
+
+
+#--------------------#
+
+
+#' Validate time stamp arguments and allow for date character
+#'
+#' This function checks `from` and `to` arguments for valid inputs of epoch or
+#' a date as a character string.
+#'
+#' @param x A data frame containing flattened athlete test data.
+#' @return An epoch time stamp
+#' @keywords internal
+validate_timestamp <- function(x) {
+
+  # Helper function to check if a string is in "yyyy-mm-dd" format
+  is_valid_date <- function(date_str) {
+    tryCatch({
+      base::as.Date(date_str, format = "%Y-%m-%d")
+      TRUE
+    }, error = function(e) {
+      FALSE
+    })
+  }
+
+  # If argument is numeric, assume it's an epoch timestamp
+  if (base::is.numeric(x)) {
+    return(x)
+  }
+
+  # If argument is a character, check if it's a valid date string
+  if (base::is.character(x)) {
+    if (is_valid_date(x)) {
+      # Convert date string to epoch timestamp
+      d <- base::as.numeric(
+        base::as.POSIXct(x, format = "%Y-%m-%d", tz = "UTC")
+      )
+
+      # Check for incorrect format
+      if (base::is.na(d)) {
+        stop(
+          logger::log_error(
+            paste("Error: The argument is not a valid date in 'yyyy-mm-dd' format.")
+          )
+        )
+      } else {
+        return(d)
+      }
+
+    } else {
+      stop(
+        logger::log_error(
+          paste("Error: The argument is not a valid date in 'yyyy-mm-dd' format.")
+        )
+      )
+    }
+  }
+
+  # If neither, return an error
+  stop(
+    logger::log_error(
+      paste(
+        "Error: The argument is neither a valid epoch timestamp nor a valid date string."
+      )
+    )
+  )
+}
+
+
+#--------------------#
+
+
 #' Validate GetTest Parameters
 #'
 #' Check `from`, `to`, `athleteId`, `testTypeId`, `teamId`, and `groupId` parameters.
@@ -72,7 +183,9 @@ TestTypePrep <- function(arg_df) {
 
   # 1. Separate Test Type Columns from Tags
   testTypeData <- arg_df[1:3]
-  base::colnames(testTypeData) <- base::paste0("testType_", base::colnames(testTypeData))
+  TestTypeData <-
+
+    base::colnames(testTypeData) <- c("testType_uuid", "testType_name", "testType_canonicalId")
 
   # 2. Create Empty Tags Data frame
   testType_tags_id <- rep(NA, nrow(arg_df))
@@ -347,5 +460,177 @@ UpdateAthleteJSON <- function(arg_df) {
     stop(logger::log_error("athleteData must contain ID column"))
   }
 }
+
+
+#--------------------#
+
+
+#' Flatten Nested Lists in Athlete Test Output
+#'
+#' This function takes a data frame of athlete test output, which may contain
+#' nested lists or tables, and flattens them into a simple data frame. It works
+#' specifically on the columns that contain lists or other complex structures.
+#'
+#' @param arg_df A data frame containing athlete test data, including columns with nested lists or tables.
+#' @return A data frame where nested lists or tables have been flattened, making it easier to manipulate.
+#' @importFrom dplyr mutate
+#' @importFrom dplyr across
+#' @keywords internal
+dfTests_flat <- function(arg_df) {
+
+  # Supplied data frame
+  df <- arg_df
+
+  # Columns to flatten
+  flatten_cols <- c(
+    "testType_tags_id",
+    "testType_tags_name",
+    "testType_tags_desc",
+    "athlete_teams",
+    "athlete_groups"
+  )
+
+  # Add missing columns as empty vectors
+  for (col in flatten_cols) {
+    if (!col %in% base::colnames(df)) {
+      df[[col]] <- NA_character_  # Add column with NA as placeholder
+    }
+  }
+
+  # Mutate Selected Columns to single comma-separated character strings
+  df <- df %>%
+    dplyr::mutate(
+      dplyr::across(
+        dplyr::all_of(flatten_cols),
+        ~ base::sapply(., function(x) paste(unlist(x), collapse = ","))
+      )
+    )
+
+  return(df)
+}
+
+
+#--------------------#
+
+
+#' Expand Comma-Separated Values To Nested Lists
+#'
+#' This function takes a data frame of athlete test output, which contains
+#' comma-separated strings (test tag name, test tag id, test tag description,
+#' athlete team, and athlete group), and expands them into nested lists.
+#'
+#' @param arg_df A data frame containing flattened athlete test data.
+#' @return A data frame where the specified columns have been converted to nested lists.
+#' @importFrom dplyr mutate across
+#' @keywords internal
+dfTests_expand <- function(arg_df) {
+
+  # Supplied data frame
+  df <- arg_df
+
+  # Revert the specified columns back to lists using column names
+  df <- df %>%
+    mutate(
+      across(
+        c("testType_tags_id",
+          "testType_tags_name",
+          "testType_tags_desc",
+          "athlete_teams",
+          "athlete_groups"),
+        ~ strsplit(., ",")
+      )
+    )
+
+  return(df)
+}
+
+
+#--------------------#
+
+
+#' Convert Date-Time formats to Character Strings
+#'
+#' This function takes a data frame of test trials and searches for any columns
+#' with a date class. Then it will convert them to a character class.
+#'
+#' @param arg_df A data frame containing flattened athlete test data.
+#' @return A data frame where the specified columns have been converted to nested lists.
+#' @importFrom dplyr mutate across
+#' @importFrom tidyselect where
+#' @keywords internal
+dfDatetoChar <- function(arg_df) {
+
+  # Supplied data frame
+  df <- arg_df
+
+  # Identify date formats and convert to character
+  df <- df %>%
+    dplyr::mutate(
+      dplyr::across(
+        tidyselect::where(~ base::inherits(., c("Date", "POSIXct", "POSIXt"))), as.character
+      )
+    )
+
+  # Convert any columns that start with 'athlete_' (excluding specific columns) to character
+  df <- df %>%
+    dplyr::mutate(
+      dplyr::across(
+        tidyselect::starts_with("athlete_") &
+          !dplyr::all_of(c("athlete_teams", "athlete_groups", "athlete_active")),
+        as.character
+      )
+    )
+
+  return(df)
+}
+
+
+#--------------------#
+
+
+#' Clean Test Metric headers
+#'
+#' This function calls metric ids from the metric dictionary to clean metric name headers for test outputs.
+#'
+#' @param df A data frame containing flattened test metric data.
+#' @param testType the testType of the query
+#' @return A data frame with cleaned headers
+#' #' @importFrom tidyselect everything
+#' @keywords internal
+
+# Function to clean test metric headers
+replace_headers <- function(df, typeId) {
+  # Get the metrics lookup table
+  metrics_lookup <- if (!base::is.null(typeId)) {
+    get_metrics(testType = typeId)
+  } else {
+    get_metrics(testType = "all")
+  }
+
+  # Create a named vector for lookup: id as the value, header as the name
+  header_lookup <- stats::setNames(metrics_lookup$id, metrics_lookup$label_unit)
+
+  # Trial Metrics
+  trialMetrics <- df
+
+  # Deduplicate column mapping to keep only the first occurrence
+  deduplicated_lookup <- header_lookup[!duplicated(header_lookup)]
+
+  # Check for missing headers
+  missing_headers <- setdiff(names(trialMetrics), names(deduplicated_lookup))
+  if (length(missing_headers) > 0) {
+    warning("The following columns have no match in the header lookup: ", paste(missing_headers, collapse = ", "))
+  }
+
+  # Rename columns using deduplicated lookup
+  trialMetrics <- trialMetrics %>%
+    dplyr::rename_with(
+      ~ ifelse(!is.na(deduplicated_lookup[.]), deduplicated_lookup[.], .),
+      .cols = tidyselect::everything()
+    )
+
+  return(trialMetrics)
+}
+
 
 

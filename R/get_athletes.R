@@ -163,4 +163,3 @@ get_athletes <- function(includeInactive = FALSE) {
   }
 }
 
-
